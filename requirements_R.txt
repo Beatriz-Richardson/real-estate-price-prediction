@@ -1,0 +1,10 @@
+R packages:
+readxl
+caret
+ggplot2
+lmtest
+car
+leaps
+
+Install in R with:
+install.packages(c("readxl", "caret", "ggplot2", "lmtest", "car", "leaps"))

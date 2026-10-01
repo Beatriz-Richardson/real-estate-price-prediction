@@ -1,0 +1,234 @@
+---
+title: "Real Estate Valuation: Regression Modeling and Diagnostics"
+output: html_document
+---
+
+## Purpose
+
+This analysis demonstrates how to build, simplify, diagnose, and evaluate a multiple-regression model for `PricePerSQFT`.
+
+The source coursework identified a possible quadratic relationship for `HouseAge`, compared a full and reduced model, tested regression assumptions, evaluated multicollinearity and outliers, and assessed out-of-sample RMSE.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(readxl)
+library(caret)
+library(ggplot2)
+library(lmtest)
+library(car)
+library(leaps)
+
+# Put RealEstateValue.xlsx in data/ before running.
+RealEstateValue <- read_excel("data/RealEstateValue.xlsx")
+
+set.seed(123)
+training_samples <- createDataPartition(
+  RealEstateValue$PricePerSQFT,
+  p = 0.70,
+  list = FALSE
+)
+train_data <- RealEstateValue[training_samples, ]
+test_data  <- RealEstateValue[-training_samples, ]
+```
+
+## Exploratory relationships
+
+```{r}
+independent_vars <- setdiff(names(train_data), "PricePerSQFT")
+
+for (var in independent_vars) {
+  print(
+    ggplot(train_data, aes(x = .data[[var]], y = PricePerSQFT)) +
+      geom_point(alpha = 0.6) +
+      geom_smooth(method = "lm", se = FALSE) +
+      labs(
+        title = paste("PricePerSQFT vs", var),
+        x = var,
+        y = "PricePerSQFT"
+      ) +
+      theme_minimal()
+  )
+}
+```
+
+The original analysis identified `HouseAge` as having a possible second-degree relationship with `PricePerSQFT`.
+
+## Correlation screening
+
+```{r}
+predictors <- train_data[, setdiff(names(train_data), "PricePerSQFT")]
+cor(predictors)
+```
+
+In the saved coursework results, the largest reported predictor correlations included:
+
+- `ToTransitStation` and `Longitude`: approximately -0.79
+- `ToTransitStation` and `NumConvenienceStores`: approximately -0.59
+
+These correlations are screening signals, not by themselves reasons to automatically remove variables.
+
+## Full regression model
+
+```{r}
+train_data$HouseAge2 <- train_data$HouseAge^2
+
+full_model <- lm(
+  PricePerSQFT ~ HouseAge + HouseAge2 + ToTransitStation +
+    NumConvenienceStores + Latitude + Longitude,
+  data = train_data
+)
+
+summary(full_model)
+
+training_rmse <- function(model) {
+  sqrt(mean(residuals(model)^2))
+}
+
+training_rmse(full_model)
+AIC(full_model)
+```
+
+## Reduced model
+
+The original backward-elimination step removed `Longitude`.
+
+```{r}
+reduced_model <- lm(
+  PricePerSQFT ~ HouseAge + HouseAge2 + ToTransitStation +
+    NumConvenienceStores + Latitude,
+  data = train_data
+)
+
+summary(reduced_model)
+training_rmse(reduced_model)
+anova(reduced_model, full_model)
+AIC(full_model, reduced_model)
+```
+
+The saved coursework reported approximately:
+
+| Model | Adjusted R² | Training RMSE | Nested-model ANOVA | AIC |
+|---|---:|---:|---:|---:|
+| Full | 0.5863 | 76.91 | — | ~3371.7 |
+| Reduced (-Longitude) | 0.5877 | 75.99 | p = 0.8104 | ~3371.7 |
+
+These are preserved as **coursework-reported results** rather than newly recomputed metrics because the original Excel dataset is not included in this repository.
+
+## Regression diagnostics
+
+```{r}
+par(mfrow = c(2, 2))
+plot(reduced_model)
+par(mfrow = c(1, 1))
+
+qqnorm(residuals(reduced_model))
+qqline(residuals(reduced_model))
+
+shapiro.test(residuals(reduced_model))
+
+dwtest(reduced_model)
+acf(residuals(reduced_model), main = "ACF Plot of Residuals")
+
+plot(
+  fitted(reduced_model),
+  residuals(reduced_model),
+  xlab = "Fitted Values",
+  ylab = "Residuals",
+  main = "Residuals vs Fitted"
+)
+abline(h = 0)
+
+crPlots(reduced_model)
+
+ncvTest(reduced_model)
+spreadLevelPlot(reduced_model)
+
+vif(reduced_model)
+
+outlierTest(reduced_model)
+```
+
+The original analysis reported:
+
+- mild tail deviations in the Q-Q plot;
+- no clear evidence of autocorrelated residuals;
+- no obvious nonlinear residual pattern;
+- evidence of heteroscedasticity (`ncvTest` reported p ≈ 0.003);
+- high VIF values for `HouseAge` and `HouseAge2`;
+- an outlier flagged at observation 193.
+
+These findings matter because model diagnostics can reveal limitations even when headline fit statistics look acceptable.
+
+## Polynomial-term multicollinearity
+
+Including `HouseAge` and `HouseAge²` can naturally produce high VIF values because a variable and its square are mathematically related.
+
+A common refinement is to center `HouseAge` before creating the quadratic term:
+
+```{r}
+train_data$HouseAge_centered <- train_data$HouseAge - mean(train_data$HouseAge)
+train_data$HouseAge_centered2 <- train_data$HouseAge_centered^2
+
+centered_model <- lm(
+  PricePerSQFT ~ HouseAge_centered + HouseAge_centered2 +
+    ToTransitStation + NumConvenienceStores + Latitude,
+  data = train_data
+)
+
+vif(centered_model)
+```
+
+This is shown as a methodological extension; it was not part of the original exam model.
+
+## All-subsets regression
+
+```{r}
+subset_model <- regsubsets(
+  PricePerSQFT ~ HouseAge + HouseAge2 + ToTransitStation +
+    NumConvenienceStores + Latitude,
+  data = train_data,
+  nbest = 1
+)
+
+subset_summary <- summary(subset_model)
+subset_summary$adjr2
+```
+
+The saved coursework identified:
+
+`PricePerSQFT ~ HouseAge + HouseAge2 + ToTransitStation + Latitude`
+
+as the formula selected by adjusted R-squared in the all-subsets step.
+
+## Held-out test evaluation
+
+```{r}
+test_data$HouseAge2 <- test_data$HouseAge^2
+test_predictions <- predict(reduced_model, newdata = test_data)
+
+test_rmse <- sqrt(
+  mean((test_data$PricePerSQFT - test_predictions)^2)
+)
+
+test_rmse
+```
+
+The test RMSE should be treated as more relevant to predictive generalization than training residual RMSE because it evaluates observations not used to fit the model.
+
+## Model-selection interpretation
+
+The lowest training RMSE is **not automatically sufficient** to identify the best model.
+
+A defensible choice should consider:
+
+- held-out predictive performance;
+- model complexity;
+- statistical significance and nested-model comparisons;
+- AIC or another appropriate information criterion;
+- regression assumptions;
+- multicollinearity;
+- influential observations;
+- interpretability and business purpose.
+
+## Limitations
+
+The source dataset is not included in the repository, so the numerical results preserved above are those recorded in the original coursework. A fully reproducible public portfolio version would require either permission to distribute the original dataset or a clearly documented public/synthetic substitute.
